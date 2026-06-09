@@ -1,0 +1,311 @@
+-- ✿ BrainrotTop ✿ — All Gears Duelo
+-- GUI estilo ZenoneTop com TP no Brainrot, TP posição, Auto Potion
+
+local Players       = game:GetService("Players")
+local UIS           = game:GetService("UserInputService")
+local RunService    = game:GetService("RunService")
+local LocalPlayer   = Players.LocalPlayer
+
+-- =============================================
+--  ESTADO
+-- =============================================
+local autoPotion  = false
+local tpLoopOn    = false
+local tpThread    = nil
+local savedPos    = nil
+local targetPlayer = nil  -- jogador alvo para TP no Brainrot
+
+-- =============================================
+--  HELPERS
+-- =============================================
+local function getHRP(player)
+    local char = (player or LocalPlayer).Character
+    return char and char:FindFirstChild("HumanoidRootPart")
+end
+
+local function notify(msg)
+    game:GetService("StarterGui"):SetCore("SendNotification",{
+        Title="BrainrotTop", Text=msg, Duration=3
+    })
+end
+
+local function tryCollect(obj)
+    if not obj then return end
+    local function act(o)
+        local cd = o:FindFirstChildOfClass("ClickDetector")
+        if cd then fireclickdetector(cd); return true end
+        local pp = o:FindFirstChildOfClass("ProximityPrompt")
+        if pp then fireproximityprompt(pp); return true end
+    end
+    if obj:IsA("Model") then
+        for _,d in ipairs(obj:GetDescendants()) do if act(d) then return end end
+    end
+    act(obj)
+end
+
+local function findBrainrotNear(position)
+    -- Procura o Brainrot mais próximo de uma posição
+    local best, bestDist = nil, math.huge
+    for _, obj in ipairs(game:GetService("Workspace"):GetDescendants()) do
+        if obj.Name:lower():find("brainrot") or obj.Name:lower():find("brain") then
+            local pos
+            if obj:IsA("BasePart") then pos = obj.Position
+            elseif obj:IsA("Model") then
+                local p = obj:FindFirstChildWhichIsA("BasePart")
+                if p then pos = p.Position end
+            end
+            if pos then
+                local d = (pos - position).Magnitude
+                if d < bestDist then bestDist = d; best = obj end
+            end
+        end
+    end
+    return best
+end
+
+-- =============================================
+--  GUI
+-- =============================================
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "BrainrotTop"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.Parent = game:GetService("CoreGui")
+
+-- Frame principal
+local Main = Instance.new("Frame")
+Main.Size = UDim2.new(0, 220, 0, 260)
+Main.Position = UDim2.new(0, 20, 0.3, 0)
+Main.BackgroundColor3 = Color3.fromRGB(18, 18, 28)
+Main.BorderSizePixel = 0
+Main.Active = true
+Main.Draggable = true
+Main.Parent = ScreenGui
+Instance.new("UICorner", Main).CornerRadius = UDim.new(0, 12)
+
+-- Borda colorida no topo
+local TopBar = Instance.new("Frame")
+TopBar.Size = UDim2.new(1, 0, 0, 4)
+TopBar.BackgroundColor3 = Color3.fromRGB(180, 80, 255)
+TopBar.BorderSizePixel = 0
+TopBar.Parent = Main
+Instance.new("UICorner", TopBar).CornerRadius = UDim.new(0, 12)
+
+-- Título
+local TitleLbl = Instance.new("TextLabel")
+TitleLbl.Size = UDim2.new(1, -30, 0, 36)
+TitleLbl.Position = UDim2.new(0, 10, 0, 4)
+TitleLbl.BackgroundTransparency = 1
+TitleLbl.Text = "✿ BrainrotTop ✿"
+TitleLbl.TextColor3 = Color3.fromRGB(255, 255, 255)
+TitleLbl.TextSize = 14
+TitleLbl.Font = Enum.Font.GothamBold
+TitleLbl.TextXAlignment = Enum.TextXAlignment.Center
+TitleLbl.Parent = Main
+
+-- Fechar
+local CloseBtn = Instance.new("TextButton")
+CloseBtn.Size = UDim2.new(0, 22, 0, 22)
+CloseBtn.Position = UDim2.new(1, -26, 0, 6)
+CloseBtn.BackgroundColor3 = Color3.fromRGB(200,50,50)
+CloseBtn.Text = "x"
+CloseBtn.TextColor3 = Color3.fromRGB(255,255,255)
+CloseBtn.TextSize = 12
+CloseBtn.Font = Enum.Font.GothamBold
+CloseBtn.BorderSizePixel = 0
+CloseBtn.Parent = Main
+Instance.new("UICorner", CloseBtn).CornerRadius = UDim.new(1, 0)
+CloseBtn.MouseButton1Click:Connect(function() ScreenGui:Destroy() end)
+
+-- Helper: cria botão
+local function makeBtn(text, color, posY)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, -20, 0, 36)
+    btn.Position = UDim2.new(0, 10, 0, posY)
+    btn.BackgroundColor3 = color
+    btn.Text = text
+    btn.TextColor3 = Color3.fromRGB(255,255,255)
+    btn.TextSize = 13
+    btn.Font = Enum.Font.GothamBold
+    btn.BorderSizePixel = 0
+    btn.Parent = Main
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 8)
+    return btn
+end
+
+-- =============================================
+--  BOTÃO 1 — TP no Brainrot do Jogador Alvo
+-- =============================================
+local Btn1 = makeBtn("🧠 TP no Brainrot do Alvo", Color3.fromRGB(130, 80, 220), 44)
+
+-- Dropdown de jogadores (clique direito no botão troca alvo)
+Btn1.MouseButton1Click:Connect(function()
+    local hrp = getHRP()
+    if not hrp then notify("Personagem não encontrado!"); return end
+
+    -- Pega todos os jogadores menos você
+    local targets = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer then table.insert(targets, p) end
+    end
+
+    if #targets == 0 then notify("Nenhum jogador encontrado!"); return end
+
+    -- Usa o targetPlayer definido, ou o primeiro disponível
+    local tp = targetPlayer
+    if not tp or not tp.Parent then tp = targets[1] end
+
+    local tHRP = getHRP(tp)
+    if not tHRP then notify("Alvo sem personagem!"); return end
+
+    -- Acha Brainrot perto do alvo
+    local brainrot = findBrainrotNear(tHRP.Position)
+    if brainrot then
+        local pos
+        if brainrot:IsA("BasePart") then pos = brainrot.Position
+        elseif brainrot:IsA("Model") then
+            local p = brainrot:FindFirstChildWhichIsA("BasePart")
+            if p then pos = p.Position end
+        end
+        if pos then
+            hrp.CFrame = CFrame.new(pos + Vector3.new(0,3,0))
+            task.wait(0.1)
+            tryCollect(brainrot)
+            notify("TP no Brainrot de " .. tp.Name)
+        end
+    else
+        -- Fallback: TP direto no jogador
+        hrp.CFrame = tHRP.CFrame * CFrame.new(0, 0, -3)
+        notify("Brainrot não achado, TP no jogador: " .. tp.Name)
+    end
+end)
+
+-- =============================================
+--  BOTÃO 2 — Selecionar Alvo (jogador)
+-- =============================================
+local Btn2 = makeBtn("👤 Selecionar Alvo", Color3.fromRGB(200, 120, 30), 88)
+
+-- Mini lista de jogadores ao clicar
+local playerListFrame = Instance.new("Frame")
+playerListFrame.Size = UDim2.new(0, 180, 0, 0)
+playerListFrame.Position = UDim2.new(0, 10, 0, 126)
+playerListFrame.BackgroundColor3 = Color3.fromRGB(28, 28, 42)
+playerListFrame.BorderSizePixel = 0
+playerListFrame.ClipsDescendants = true
+playerListFrame.Visible = false
+playerListFrame.Parent = Main
+Instance.new("UICorner", playerListFrame).CornerRadius = UDim.new(0, 8)
+Instance.new("UIListLayout", playerListFrame).Padding = UDim.new(0, 2)
+
+Btn2.MouseButton1Click:Connect(function()
+    -- Limpa lista antiga
+    for _, c in ipairs(playerListFrame:GetChildren()) do
+        if c:IsA("TextButton") then c:Destroy() end
+    end
+
+    local pl = Players:GetPlayers()
+    local count = 0
+    for _, p in ipairs(pl) do
+        if p ~= LocalPlayer then
+            local pb = Instance.new("TextButton")
+            pb.Size = UDim2.new(1, 0, 0, 28)
+            pb.BackgroundColor3 = Color3.fromRGB(40,40,60)
+            pb.Text = p.Name
+            pb.TextColor3 = Color3.fromRGB(220,220,255)
+            pb.TextSize = 12
+            pb.Font = Enum.Font.Gotham
+            pb.BorderSizePixel = 0
+            pb.Parent = playerListFrame
+            Instance.new("UICorner", pb).CornerRadius = UDim.new(0,5)
+            pb.MouseButton1Click:Connect(function()
+                targetPlayer = p
+                Btn2.Text = "👤 Alvo: " .. p.Name
+                playerListFrame.Visible = false
+                playerListFrame.Size = UDim2.new(0,180,0,0)
+                notify("Alvo definido: " .. p.Name)
+            end)
+            count = count + 1
+        end
+    end
+
+    if count == 0 then notify("Nenhum jogador na sala!"); return end
+
+    playerListFrame.Visible = true
+    playerListFrame.Size = UDim2.new(0, 180, 0, count * 30 + 4)
+    Main.Size = UDim2.new(0, 220, 0, 270 + count * 30)
+end)
+
+-- =============================================
+--  BOTÃO 3 — Auto Potion
+-- =============================================
+local Btn3 = makeBtn("💊 Auto Potion : OFF", Color3.fromRGB(200, 50, 80), 132)
+
+Btn3.MouseButton1Click:Connect(function()
+    autoPotion = not autoPotion
+    Btn3.Text = "💊 Auto Potion : " .. (autoPotion and "ON" or "OFF")
+    Btn3.BackgroundColor3 = autoPotion
+        and Color3.fromRGB(50, 180, 80)
+        or  Color3.fromRGB(200, 50, 80)
+end)
+
+-- Loop Auto Potion — usa poções do inventário
+RunService.Heartbeat:Connect(function()
+    if not autoPotion then return end
+    local char = LocalPlayer.Character
+    if not char then return end
+    local hum = char:FindFirstChild("Humanoid")
+    if hum and hum.Health < hum.MaxHealth * 0.6 then
+        -- Tenta usar item de cura do backpack
+        local bp = LocalPlayer:FindFirstChild("Backpack")
+        if bp then
+            for _, tool in ipairs(bp:GetChildren()) do
+                if tool.Name:lower():find("potion") or tool.Name:lower():find("heal") then
+                    tool.Parent = char
+                    task.wait(0.1)
+                    local fa = tool:FindFirstChildOfClass("LocalScript")
+                        or tool:FindFirstChild("Handle")
+                    if fa and fa:IsA("BasePart") then
+                        -- equipa e ativa
+                        local hum2 = char:FindFirstChild("Humanoid")
+                        if hum2 then hum2:EquipTool(tool) end
+                    end
+                    break
+                end
+            end
+        end
+    end
+end)
+
+-- =============================================
+--  BOTÃO 4 — TP Posição [T]
+-- =============================================
+local Btn4 = makeBtn("⚡ TP Posição [T]", Color3.fromRGB(30, 160, 80), 176)
+
+-- Salva posição com clique, TP com T
+Btn4.MouseButton1Click:Connect(function()
+    local hrp = getHRP()
+    if hrp then
+        savedPos = hrp.CFrame
+        notify("Posição salva! Pressione T para teleportar.")
+        Btn4.Text = "⚡ TP Salvo [T] ✓"
+    end
+end)
+
+UIS.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+    -- T = TP para posição salva
+    if input.KeyCode == Enum.KeyCode.T then
+        local hrp = getHRP()
+        if hrp and savedPos then
+            hrp.CFrame = savedPos
+            notify("Teleportado para posição salva!")
+        else
+            notify("Nenhuma posição salva! Clique no botão primeiro.")
+        end
+    end
+    -- G = parar loops
+    if input.KeyCode == Enum.KeyCode.G then
+        tpLoopOn = false
+        notify("Loops parados.")
+    end
+end)
